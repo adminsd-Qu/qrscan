@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """QR Code Scanner — Windows Desktop GUI.
 
-tkinter dialog: paste / browse image path, decode QR codes and barcodes,
-drag-and-drop files from Explorer.
+tkinter dialog: paste / browse image path, decode QR codes and barcodes.
+Supports drag-and-drop from Explorer (Win32 WM_DROPFILES).
 """
 
 import ctypes
@@ -14,6 +14,32 @@ from tkinter import filedialog, messagebox, ttk
 from qrscan import decode_image
 
 WM_DROPFILES = 0x0233
+
+# -- 64-bit Win32 API signatures -----------------------------------------------
+# windll auto-detection guesses wrong on 64-bit Python for LONG_PTR parameters.
+# Set explicit argtypes once at module level.
+
+_ct = ctypes
+
+_ct.windll.comctl32.DefSubclassProc.argtypes = [
+    _ct.c_void_p, _ct.c_uint, _ct.c_void_p, _ct.c_void_p]
+_ct.windll.comctl32.DefSubclassProc.restype = _ct.c_longlong
+_ct.windll.comctl32.SetWindowSubclass.restype = _ct.c_bool
+
+_ct.windll.shell32.DragQueryFileW.argtypes = [
+    _ct.c_void_p, _ct.c_uint, _ct.c_void_p, _ct.c_uint]
+_ct.windll.shell32.DragQueryFileW.restype = _ct.c_uint
+_ct.windll.shell32.DragFinish.argtypes = [_ct.c_void_p]
+
+SUBCLASSPROC = _ct.WINFUNCTYPE(
+    _ct.c_longlong,     # LRESULT
+    _ct.c_void_p,       # HWND
+    _ct.c_uint,         # UINT
+    _ct.c_void_p,       # WPARAM
+    _ct.c_longlong,     # LPARAM
+    _ct.c_ulonglong,    # UINT_PTR  uIdSubclass
+    _ct.c_ulonglong,    # DWORD_PTR dwRefData
+)
 
 
 def _resource_path(rel):
@@ -92,50 +118,29 @@ class QRScannerApp(tk.Tk):
         ttk.Button(frame_bottom, text="帮助", command=self._open_help).grid(
             row=0, column=1, sticky="e")
 
-    # -- drag-and-drop (Win32 SetWindowSubclass) ----------------------------
+    # -- drag-and-drop ------------------------------------------------------
 
     def _enable_drag_drop(self):
-        """Register file-drop via WM_DROPFILES.
-        Uses SetWindowSubclass so Tk's own window procedure stays intact."""
+        """Register WM_DROPFILES via SetWindowSubclass.
+        Subclass (not replace) keeps Tk's window procedure intact."""
         self.update_idletasks()
         hwnd = int(self.frame(), 16)
-
-        comctl32 = ctypes.windll.comctl32
-        comctl32.DefSubclassProc.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
-        comctl32.DefSubclassProc.restype = ctypes.c_longlong
-
-        shell32 = ctypes.windll.shell32
-        shell32.DragQueryFileW.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
-        shell32.DragQueryFileW.restype = ctypes.c_uint
-        shell32.DragFinish.argtypes = [ctypes.c_void_p]
-
-        SUBCLASSPROC = ctypes.WINFUNCTYPE(
-            ctypes.c_longlong,     # LRESULT
-            ctypes.c_void_p,       # HWND
-            ctypes.c_uint,         # UINT
-            ctypes.c_void_p,       # WPARAM
-            ctypes.c_longlong,     # LPARAM
-            ctypes.c_ulonglong,    # UINT_PTR  uIdSubclass
-            ctypes.c_ulonglong,    # DWORD_PTR dwRefData
-        )
 
         @SUBCLASSPROC
         def _subclass_proc(hwnd, msg, wparam, lparam, _uid, _ref):
             if msg == WM_DROPFILES:
                 buf = ctypes.create_unicode_buffer(260)
-                shell32.DragQueryFileW(wparam, 0, buf, 260)
-                shell32.DragFinish(wparam)
+                ctypes.windll.shell32.DragQueryFileW(wparam, 0, buf, 260)
+                ctypes.windll.shell32.DragFinish(wparam)
                 self._path_var.set(buf.value)
                 return 0
-            return comctl32.DefSubclassProc(hwnd, msg, wparam, lparam)
+            return ctypes.windll.comctl32.DefSubclassProc(
+                hwnd, msg, wparam, lparam)
 
         self._subclass_ref = _subclass_proc  # prevent GC
 
-        comctl32.SetWindowSubclass.restype = ctypes.c_bool
-        comctl32.SetWindowSubclass(hwnd, _subclass_proc, 1, 0)
-        shell32.DragAcceptFiles(hwnd, True)
+        ctypes.windll.comctl32.SetWindowSubclass(hwnd, _subclass_proc, 1, 0)
+        ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
 
     # -- actions ------------------------------------------------------------
 
@@ -154,11 +159,10 @@ class QRScannerApp(tk.Tk):
                 ("所有文件", "*.*"),
             ])
         if path:
-            self._entry_path.delete(0, tk.END)
-            self._entry_path.insert(0, path)
+            self._path_var.set(path)
 
     def _decode(self):
-        path = self._path_var.get().strip('"\' ')
+        path = self._path_var.get()
         if not path:
             messagebox.showwarning("提示", "请先输入或选择图片文件路径。")
             return

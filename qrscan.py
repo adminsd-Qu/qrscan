@@ -25,29 +25,24 @@ VERSION = "1.0.0"
 def decode_image(path):
     """Decode all barcodes in an image file.
 
-    Returns a list of pyzbar Decoded objects (empty list if none found),
+    Returns a list of Decoded objects (empty list if none found),
     or prints an error to stderr and returns None on failure.
     """
     try:
         img = Image.open(path)
-        img = img.convert("RGB")  # Normalise RGBA / P / CMYK → RGB
-        return pyzbar.decode(img)
+        return pyzbar.decode(img.convert("RGB"))
     except FileNotFoundError:
         print(f"Error: '{path}' - file not found.", file=sys.stderr)
-        return None
     except PermissionError:
         print(f"Error: '{path}' - permission denied.", file=sys.stderr)
-        return None
     except UnidentifiedImageError:
         print(f"Error: '{path}' - not a recognised image format.", file=sys.stderr)
-        return None
     except (OSError, SyntaxError):
         print(f"Error: '{path}' - cannot decode image (file may be damaged).",
               file=sys.stderr)
-        return None
     except Exception as exc:
         print(f"Error: '{path}' - decoder error: {exc}", file=sys.stderr)
-        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -61,11 +56,6 @@ def format_text(file_results, *, show_types=False, quiet=False):
         None values represent files that errored.
     """
     lines = []
-    total_found = sum(
-        len(results) for results in file_results.values()
-        if results is not None
-    )
-
     for path, results in file_results.items():
         if results is None:
             continue  # Error already printed to stderr
@@ -76,8 +66,6 @@ def format_text(file_results, *, show_types=False, quiet=False):
                 lines.append(f"{prefix}{r.data.decode('utf-8', errors='replace')}")
             continue
 
-        # Only show per-file header when there are multiple files or
-        # multiple results to avoid noise for single-file/single-QR.
         multi = len(file_results) > 1 or len(results) > 1
 
         if multi:
@@ -94,7 +82,7 @@ def format_text(file_results, *, show_types=False, quiet=False):
                 lines.append(f"{label}{type_tag}{text}")
 
         if multi:
-            lines.append("")  # Blank separator between files
+            lines.append("")
 
     return "\n".join(lines).rstrip()
 
@@ -148,35 +136,21 @@ def parse_args():
 def main():
     args = parse_args()
 
-    file_results = {}
-    errors = {"file": False, "image": False, "decoder": False}
+    file_results = {path: decode_image(path) for path in args.files}
 
-    for path in args.files:
-        result = decode_image(path)
-        file_results[path] = result
+    # Determine exit code
+    any_found = any(
+        r is not None and len(r) > 0 for r in file_results.values())
+    any_error = any(r is None for r in file_results.values())
 
-    # Determine exit code: worst error across all files wins
-    any_qr_found = False
-    for results in file_results.values():
-        if results is None:
-            # Could distinguish error types here if needed
-            errors["file"] = True
-        elif isinstance(results, list) and results:
-            any_qr_found = True
-
-    if any_qr_found:
+    if any_found:
         exit_code = 0
-    elif errors["file"]:
+    elif any_error:
         exit_code = 2
-    elif not any(  # all results are empty lists (no barcode found)
-        r is not None and len(r) > 0
-        for r in file_results.values()
-    ) and not errors["file"]:
-        exit_code = 1
     else:
-        exit_code = 0  # Fallback (shouldn't reach here)
+        exit_code = 1
 
-    # Produce output
+    # Output
     if args.json:
         print(format_json(file_results))
     else:
