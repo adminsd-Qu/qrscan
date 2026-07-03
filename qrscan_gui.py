@@ -5,10 +5,15 @@ A portable dialog-based QR code / barcode scanner.
 Input an image file path, decode and copy the result.
 """
 
+import ctypes
 import os
 import sys
 import tkinter as tk
+from ctypes import wintypes
 from tkinter import filedialog, messagebox, ttk
+
+WM_DROPFILES = 0x0233
+GWL_WNDPROC = -4
 
 from qrscan import decode_image
 
@@ -42,6 +47,7 @@ class QRScannerApp(tk.Tk):
         self._path_var = tk.StringVar()
         self._path_var.trace_add("write", self._on_path_change)
         self._build_ui()
+        self._enable_drag_drop()
 
     # -- window management ------------------------------------------------
 
@@ -112,6 +118,43 @@ class QRScannerApp(tk.Tk):
         )
 
     # -- actions ----------------------------------------------------------
+
+    def _enable_drag_drop(self):
+        """Register the window to accept file drops via WM_DROPFILES."""
+        hwnd = self.winfo_id()
+
+        self._old_wndproc = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_WNDPROC)
+        self._old_wndproc = wintypes.LONG_PTR(self._old_wndproc)
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            wintypes.LONG_PTR,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        )
+
+        @WNDPROC
+        def _wndproc(hwnd, msg, wparam, lparam):
+            if msg == WM_DROPFILES:
+                buf = ctypes.create_unicode_buffer(260)
+                ctypes.windll.shell32.DragQueryFileW(wparam, 0, buf, 260)
+                ctypes.windll.shell32.DragFinish(wparam)
+                path = buf.value
+                self._path_var.set(path)
+                self._decode()
+                return 0
+            return ctypes.windll.user32.CallWindowProcW(
+                self._old_wndproc, hwnd, msg, wparam, lparam
+            )
+
+        # Prevent GC from collecting the callback
+        self._wndproc_ref = _wndproc
+
+        ctypes.windll.user32.SetWindowLongPtrW(
+            hwnd, GWL_WNDPROC, ctypes.cast(_wndproc, ctypes.c_void_p).value
+        )
+        ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
 
     def _on_path_change(self, *_):
         """Auto-strip surrounding double-quotes pasted via Ctrl+Shift+C."""
